@@ -1,72 +1,57 @@
 import cv2
 import threading
-import os
 from deepface import DeepFace
+import os
 
-# Initialize video capture
 cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 
-# Global variables
-count = 0
-face_match = False
-reference_dataset = []  # List to store reference images
-
-# Load all reference images from a folder
-reference_folder = "reference_dataset"
-for filename in os.listdir(reference_folder):
-    if filename.endswith(".jpg") or filename.endswith(".png"):
-        img_path = os.path.join(reference_folder, filename)
-        reference_img = cv2.imread(img_path)
-        if reference_img is not None:
-            reference_dataset.append(reference_img)
-
-# Specify a more accurate model
+dataset_path = "reference_dataset"
 model_name = "VGG-Face"
 
-def face_recog(frame):
-    global face_match
+identified_person = "Unknown"
+lock = threading.Lock()
 
+def recognize_face(frame):
+    global identified_person
     try:
-        match_count = 0  # Count how many reference images match the frame
+        result = DeepFace.find(frame, db_path=dataset_path, model_name=model_name, distance_metric='cosine', enforce_detection=False)
+        with lock:
+            if result and len(result[0]) > 0:
+                identified_person = os.path.basename(result[0]['identity'][0]).split(".")[0]
+            else:
+                identified_person = "Unknown"
+        # print(f"Identified: {identified_person}") 
+    except Exception as e:
+        with lock:
+            identified_person = "Unknown"
+        # print("Recognition Error:", str(e))
 
-        # Compare the frame against each reference image
-        for ref_img in reference_dataset:
-            result = DeepFace.verify(frame, ref_img.copy(), model_name=model_name, distance_metric='cosine', enforce_detection=False)
-            if result["verified"]:
-                match_count += 1
-
-        # Decide the final result based on a threshold (e.g., at least 50% matches)
-        if match_count >= len(reference_dataset) * 0.5:  # Adjust threshold as needed
-            face_match = True
-        else:
-            face_match = False
-
-    except ValueError:
-        face_match = False
-
+count = 0
 while True:
     ret, frame = cap.read()
+    
+    if not ret:
+        break
 
-    if ret:
-        if count % 15 == 0:
-            try:
-                threading.Thread(target=face_recog, args=(frame.copy(),)).start()
-            except ValueError:
-                pass
+    if count % 15 == 0:
+        threading.Thread(target=recognize_face, args=(frame.copy(),), daemon=True).start()
 
-        count += 1
+    count += 1
 
-        if face_match:
-            cv2.putText(frame, "Match", (20, 450), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 3)
-        else:
-            cv2.putText(frame, "No Match", (20, 450), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 3)
+    with lock:
+        cv2.putText(frame, identified_person, (20, 450), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0) if identified_person != "Unknown" else (0, 0, 255), 3)
 
-        cv2.imshow("video", frame)
+    cv2.imshow("Face_Recognition", frame)
 
-    key = cv2.waitKey(1)
-    if key == ord('q'):
+    # If a person is identified, stop the process
+    with lock:
+        if identified_person != "Unknown":
+            print(f"Stopping process. Identified: {identified_person}")
+            break  # Stop the loop and exit
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
 cap.release()
